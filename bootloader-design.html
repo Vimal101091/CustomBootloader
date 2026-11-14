@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Platform-Agnostic Bootloader Design</title>
+<style>
+:root{color-scheme:light;--paper:#fff;--bg:#f3f5f8;--ink:#17263b;--muted:#43556b;--line:#cdd8e4;--blue:#174d87;--wash:#eaf3fc;--green:#155d49;--mint:#e9f7ef;--amber:#784517;--sand:#fff3e2}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:1rem/1.6 "Inter",system-ui,sans-serif}main{max-width:72rem;margin:auto;padding:2rem clamp(1rem,4vw,3rem) 4rem}header{background:#112a48;color:#fff;border-radius:1.25rem;padding:clamp(1.5rem,5vw,3rem)}h1,h2,h3{line-height:1.16;margin:0 0 .65em}h1{font-size:clamp(2rem,5vw,3.5rem);max-width:16ch}h2{font-size:clamp(1.4rem,3vw,2rem)}h3{font-size:1.1rem}p{margin:0 0 .9rem}p:last-child{margin-bottom:0}header p{max-width:62ch;color:#e2edfa}nav{display:flex;flex-wrap:wrap;gap:.6rem 1.2rem;margin:1.2rem 0 1.7rem}a{color:var(--blue);text-underline-offset:.22em}section{background:var(--paper);border:1px solid var(--line);border-radius:1rem;padding:clamp(1rem,3vw,2rem);margin:1rem 0}.diagram{display:grid;gap:.6rem;max-width:48rem;margin:1.2rem auto}.box{border:1px solid var(--line);border-radius:.75rem;padding:.8rem 1rem;text-align:center;background:var(--wash);color:var(--blue)}.box strong{display:block}.arrow{text-align:center;font-weight:700;color:var(--muted);line-height:1.2}.branches,.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.8rem}.ok{background:var(--mint);color:var(--green)}.fail{background:var(--sand);color:var(--amber)}article{border:1px solid var(--line);border-radius:.75rem;padding:1rem}.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;text-align:left}th,td{padding:.65rem .75rem;border-bottom:1px solid var(--line);vertical-align:top}thead{background:var(--wash)}tbody th{min-width:8.5rem}code,pre{font-family:"IBM Plex Mono",Consolas,monospace}code{overflow-wrap:anywhere}pre{background:#112a48;color:#eff6ff;padding:1rem;border-radius:.7rem;overflow:auto;font-size:.88rem}li+li{margin-top:.35rem}.note{color:var(--muted);font-size:.92rem}.flow{color:var(--blue);font-weight:650;margin-bottom:.5rem}.cards{margin-top:1rem}@media(max-width:38rem){.cards,.branches{grid-template-columns:1fr}th,td{padding:.5rem}}@media print{body{background:white}main{max-width:none;padding:0}header{background:white;color:var(--ink);border:1px solid var(--line)}header p{color:var(--ink)}nav{display:none}article,figure,tr{break-inside:avoid}pre{background:white;color:var(--ink);border:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>Platform-Agnostic Bootloader</h1>
+<p>One C11 boot policy, one platform interface, and a native port for each target. The first release authenticates and boots a single application image. UART recovery and A/B OTA build on that flow.</p>
+</header>
+<nav aria-label="Document sections">
+<a href="#architecture">Architecture</a><a href="#ports">Platform ports</a><a href="#updates">CRC, UART &amp; OTA</a><a href="#files">Source files</a><a href="#test">Test plan</a>
+</nav>
+<section id="architecture">
+<h2>Boot flow and platform boundary</h2>
+<figure class="diagram" aria-label="Target startup enters the shared core, which uses the platform interface to find, authenticate, and start the application. Failures go to recovery.">
+<div class="box"><strong>Target startup</strong>Reset handler, firmware entry, or simulator process</div>
+<div class="arrow" aria-hidden="true">↓</div>
+<div class="box"><strong>Shared boot core</strong>Find candidate → require authentication → request handoff</div>
+<div class="arrow" aria-hidden="true">↓ calls</div>
+<div class="box"><strong>Platform abstraction layer</strong>The selected port implements the operation contracts</div>
+<div class="arrow" aria-hidden="true">↓</div>
+<div class="branches"><div class="box ok"><strong>Verified and ready</strong>Start the application through the native boot protocol</div><div class="box fail"><strong>Failure</strong>Report the reason and enter target recovery</div></div>
+</figure>
+<div class="scroll"><table>
+<thead><tr><th scope="col">Operation</th><th scope="col">Port contract</th></tr></thead>
+<tbody>
+<tr><th scope="row"><code>find_image()</code></th><td>Return an opaque handle to the candidate. The port owns flash addresses and partition details.</td></tr>
+<tr><th scope="row"><code>verify_image()</code></th><td>Authenticate the candidate and check target compatibility using the configured trust root and image format.</td></tr>
+<tr><th scope="row"><code>start_image()</code></th><td>Validate the native entry state and transfer control to the same bytes that were authenticated.</td></tr>
+<tr><th scope="row"><code>recover()</code></th><td>Report the failure and enter recovery or stop safely. A replacement image goes through normal verification before launch.</td></tr>
+</tbody></table></div>
+<p class="note" style="margin-top:1rem">Authenticate or protect the loader and its trust configuration at an earlier stage. Build each target from the same core plus its native port. A distribution bundle can carry multiple target builds.</p>
+</section>
+<section id="ports">
+<h2>Platform ports</h2>
+<div class="cards">
+<article><h3>STM32 NUCLEO-F446RE</h3><p>Read a signed manifest and firmware payload from internal flash. Validate the application vector table, initial stack pointer, and reset handler. Prepare the Cortex-M state and branch to the application.</p><p class="note">Proposed lab layout: loader <code>0x08000000</code>, manifest <code>0x08010000</code>, app vector table <code>0x08010200</code>. Link Blinky at the app address and check that the loader fits in 64 KiB.</p><p class="note"><a href="https://www.st.com/resource/en/reference_manual/rm0390-stm32f446xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf">STM32F446 flash reference</a></p></article>
+<article><h3>ESP-IDF</h3><p>Integrate with the second-stage bootloader for the chosen chip and SDK version. Resolve the candidate from the partition table and use native image authentication with Secure Boot configured. Keep native loading and handoff.</p><p class="note">If the native API combines verification and loading, preserve the rule that control can transfer only after the chosen image is authenticated.</p><p class="note"><a href="https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32/api-guides/bootloader.html">ESP-IDF bootloader guide</a></p></article>
+<article><h3>Hosted simulator</h3><p>Use files or fixtures for image storage, inject errors, and record the requested handoff. Run the same policy tests before testing real hardware.</p></article>
+<article><h3>x86-64 UEFI</h3><p>Read the package through firmware storage services. Authenticate it and launch the verified EFI executable through firmware image services.</p></article>
+</div>
+</section>
+<section id="updates">
+<h2>CRC, UART, and OTA</h2>
+<div class="scroll"><table>
+<thead><tr><th scope="col">Path</th><th scope="col">Shared rule</th><th scope="col">Platform responsibility</th></tr></thead>
+<tbody>
+<tr><th scope="row">CRC</th><td>For a shared UART protocol, specify the CRC variant and covered bytes. Reject or retry damaged frames. Authenticate the complete image separately.</td><td>Use software or hardware CRC with the same parameters. Native transfer protocols can use their own integrity checks.</td></tr>
+<tr><th scope="row">UART recovery</th><td>Enter recovery on a boot failure or a supported recovery trigger. For a common protocol, share framing, sequence checks, and bounded retries.</td><td>Set up UART and write only the permitted flash region. When using ROM recovery, the vendor ROM handles transfer. The loader authenticates the application at the next boot.</td></tr>
+<tr><th scope="row">OTA with A/B slots</th><td>Publish a pending candidate only after the full image is durable and verified. Boot it on a limited trial and fall back if it fails to confirm.</td><td>The running app downloads into the inactive slot. The port provides durable boot state or uses native state, such as ESP-IDF OTA metadata. The app confirms after its health checks.</td></tr>
+</tbody></table></div>
+<article style="margin-top:1rem"><h3>A/B update lifecycle</h3><p class="flow">Write inactive slot → verify → mark pending → trial boot → confirm</p><p>An interrupted write leaves the confirmed slot selected. A failed or exhausted trial returns to the confirmed slot. Commit boot-state changes durably before the next transition. A single-slot UART update can require reflashing after a power cut.</p></article>
+</section>
+<section id="files">
+<h2>Proposed source files</h2>
+<pre>bootloader/
+  CMakeLists.txt                  Select a native port
+  include/boot.h                  Core entry and status codes
+  include/boot_platform.h         Platform operations and profile
+  src/boot.c                      Find, verify, start, or recover
+  src/image.c                     Reusable signed-manifest verifier
+  ports/hosted/platform.c         File-backed fixtures and simulated handoff
+  ports/cortex_m/startup.S        Reset entry
+  ports/cortex_m/board.ld         Flash and RAM layout
+  ports/cortex_m/platform.c      STM32 flash, verification, and handoff
+  ports/esp_idf/platform.c        ESP-IDF bootloader adapter
+  ports/uefi/platform.c           EFI entry, storage, and image launch
+  tests/test_boot.c               Shared policy and fault tests</pre>
+</section>
+<section id="test">
+<h2>Bring-up and acceptance</h2>
+<ol>
+<li><strong>Simulator.</strong> Confirm that valid images reach handoff and missing, corrupted, or wrong-target images reach recovery. Inject a read failure and a rejected handoff.</li>
+<li><strong>F446RE.</strong> Flash the loader and signed Blinky through ST-LINK. Check that LD2 blinks with the valid image. Corrupt the payload without re-signing and check that recovery runs.</li>
+<li><strong>ESP-IDF.</strong> Confirm that native verification gates launch. When adding OTA, test confirmation, failed trials, and power loss during update and boot-state writes.</li>
+</ol>
+</section>
+</main>
+</body>
+</html>
